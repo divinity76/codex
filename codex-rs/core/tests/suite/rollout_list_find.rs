@@ -4,6 +4,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use codex_core::find_conversation_path_by_id_str;
+use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -48,7 +49,7 @@ async fn find_locates_rollout_file_by_id() {
         .await
         .unwrap();
 
-    assert_eq!(found.unwrap(), expected);
+    assert_eq!(found, Some(expected));
 }
 
 #[tokio::test]
@@ -65,6 +66,34 @@ async fn find_handles_gitignore_covering_codex_home_directory() {
         .unwrap();
 
     assert_eq!(found, Some(expected));
+}
+
+#[tokio::test]
+async fn find_supports_unique_prefix_match() {
+    let home = TempDir::new().unwrap();
+    let id = Uuid::parse_str("019b4b3f-0c97-7601-9a6e-8cd48e294ff2").unwrap();
+    let expected = write_minimal_rollout_with_id(home.path(), id);
+
+    let found = find_conversation_path_by_id_str(home.path(), "019b")
+        .await
+        .unwrap();
+
+    assert_eq!(found, Some(expected));
+}
+
+#[tokio::test]
+async fn find_returns_newest_match_for_prefix() {
+    let home = TempDir::new().unwrap();
+    let id1 = Uuid::parse_str("abcd0000-0000-0000-0000-000000000001").unwrap();
+    let id2 = Uuid::parse_str("abcd0000-0000-0000-0000-000000000002").unwrap();
+    write_minimal_rollout_with_id(home.path(), id1);
+    let newer = write_minimal_rollout_with_id(home.path(), id2);
+
+    let found = find_conversation_path_by_id_str(home.path(), "abcd")
+        .await
+        .unwrap();
+
+    assert_eq!(found, Some(newer));
 }
 
 #[tokio::test]

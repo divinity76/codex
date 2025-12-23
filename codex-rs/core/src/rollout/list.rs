@@ -5,6 +5,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::SystemTime;
 
 use time::OffsetDateTime;
 use time::PrimitiveDateTime;
@@ -455,18 +456,14 @@ async fn file_modified_rfc3339(path: &Path) -> io::Result<Option<String>> {
     Ok(dt.format(&Rfc3339).ok())
 }
 
-/// Locate a recorded conversation rollout file by its UUID string using the existing
-/// paginated listing implementation. Returns `Ok(Some(path))` if found, `Ok(None)` if not present
-/// or the id is invalid.
+/// Locate a recorded conversation rollout file by its ID string using the existing paginated
+/// listing implementation. Returns `Ok(Some(path))` when a match is found (preferring exact and
+/// prefix matches and falling back to the most recently modified match when ambiguous), `Ok(None)`
+/// otherwise.
 pub async fn find_conversation_path_by_id_str(
     codex_home: &Path,
     id_str: &str,
 ) -> io::Result<Option<PathBuf>> {
-    // Validate UUID format early.
-    if Uuid::parse_str(id_str).is_err() {
-        return Ok(None);
-    }
-
     let mut root = codex_home.to_path_buf();
     root.push(SESSIONS_SUBDIR);
     if !root.exists() {
@@ -474,7 +471,7 @@ pub async fn find_conversation_path_by_id_str(
     }
     // This is safe because we know the values are valid.
     #[allow(clippy::unwrap_used)]
-    let limit = NonZero::new(1).unwrap();
+    let limit = NonZero::new(100).unwrap();
     // This is safe because we know the values are valid.
     #[allow(clippy::unwrap_used)]
     let threads = NonZero::new(2).unwrap();
@@ -494,9 +491,44 @@ pub async fn find_conversation_path_by_id_str(
     )
     .map_err(|e| io::Error::other(format!("file search failed: {e}")))?;
 
-    Ok(results
-        .matches
-        .into_iter()
-        .next()
-        .map(|m| root.join(m.path)))
+    let mut prefix_matches: Vec<PathBuf> = Vec::new();
+    for file_match in results.matches {
+        let candidate = root.join(&file_match.path);
+        let Some(stem) = candidate.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let uuid_len = Uuid::nil().to_string().len();
+        if stem.len() < uuid_len {
+            continue;
+        }
+        let uuid_part = &stem[stem.len() - uuid_len..];
+        if Uuid::parse_str(uuid_part).is_ok() && uuid_part.starts_with(id_str) {
+            prefix_matches.push(candidate);
+        }
+    }
+
+    if prefix_matches.len() == 1 {
+        return Ok(prefix_matches.into_iter().next());
+    }
+
+    let mut newest: Option<(PathBuf, Option<SystemTime>)> = None;
+    for path in prefix_matches {
+        let modified = tokio::fs::metadata(&path)
+            .await
+            .ok()
+            .and_then(|m| m.modified().ok());
+        match &mut newest {
+            Some((best_path, best_time)) => {
+                let best_key = (best_time.clone(), best_path.as_path());
+                let candidate_key = (modified.clone(), path.as_path());
+                if candidate_key > best_key {
+                    *best_path = path;
+                    *best_time = modified;
+                }
+            }
+            None => newest = Some((path, modified)),
+        }
+    }
+
+    Ok(newest.map(|(path, _)| path))
 }

@@ -331,7 +331,7 @@ mod tests {
         };
         assert_safe(&zsh_shell, "ls -la");
 
-        if let Some(path) = try_find_powershell_executable_blocking() {
+        if let Some(path) = try_find_powershell_executable_blocking().filter(|_| cfg!(windows)) {
             let powershell = Shell {
                 shell_type: ShellType::PowerShell,
                 shell_path: path.to_path_buf(),
@@ -351,12 +351,17 @@ mod tests {
     }
 
     fn assert_safe(shell: &Shell, command: &str) {
-        assert!(is_known_safe_command(
-            &shell.derive_exec_args(command, /* use_login_shell */ true)
-        ));
-        assert!(is_known_safe_command(
-            &shell.derive_exec_args(command, /* use_login_shell */ false)
-        ));
+        let login_args = shell.derive_exec_args(command, /* use_login_shell */ true);
+        assert!(
+            is_known_safe_command(&login_args),
+            "login shell args {login_args:?} were considered unsafe"
+        );
+
+        let non_login_args = shell.derive_exec_args(command, /* use_login_shell */ false);
+        assert!(
+            is_known_safe_command(&non_login_args),
+            "non-login shell args {non_login_args:?} were considered unsafe"
+        );
     }
 
     #[tokio::test]
